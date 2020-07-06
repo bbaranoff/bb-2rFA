@@ -28,20 +28,16 @@
 
 #include <osmocom/bb/common/logging.h>
 #include <osmocom/bb/common/osmocom_data.h>
+#include <osmocom/bb/common/sap_interface.h>
+#include <osmocom/bb/common/sap_proto.h>
 #include <osmocom/bb/common/networks.h>
 #include <osmocom/bb/mobile/vty.h>
 #include "client.h"
 #include "server.h"
 #include "hex.h"
-//fork
-#include <sys/types.h>
-#include <unistd.h>
-#include <sys/wait.h>
 /* enable to get an empty list of forbidden PLMNs, even if stored on SIM.
  * if list is changed, the result is not written back to SIM */
 //#define TEST_EMPTY_FPLMN
-
-void *l23_ctx;
 
 static void subscr_sim_query_cb(struct osmocom_ms *ms, struct msgb *msg);
 static void subscr_sim_update_cb(struct osmocom_ms *ms, struct msgb *msg);
@@ -106,7 +102,7 @@ int gsm_subscr_init(struct osmocom_ms *ms)
 	subscr->key_seq = 7;
 
 	/* any cell selection timer timeout */
-	subscr->any_timeout = 30;
+	subscr->any_timeout = ms->settings.any_timeout;
 
 	/* init lists */
 	INIT_LLIST_HEAD(&subscr->plmn_list);
@@ -263,7 +259,7 @@ static int subscr_sim_imsi(struct osmocom_ms *ms, uint8_t *data,
 		return -EINVAL;
 	}
 
-	strncpy(subscr->imsi, imsi + 1, sizeof(subscr->imsi) - 1);
+	OSMO_STRLCPY_ARRAY(subscr->imsi, imsi + 1);
 
 	LOGP(DMM, LOGL_INFO, "received IMSI %s from SIM\n", subscr->imsi);
 
@@ -354,9 +350,9 @@ static int subscr_sim_smsp(struct osmocom_ms *ms, uint8_t *data,
 			strcpy(subscr->sms_sca, "+");
 		if (((smsp->ts_sca[1] & 0x70) >> 4) == 2)
 			strcpy(subscr->sms_sca, "0");
-		gsm48_decode_bcd_number(subscr->sms_sca +
-			strlen(subscr->sms_sca), sizeof(subscr->sms_sca)
-			- strlen(subscr->sms_sca), smsp->ts_sca, 1);
+		gsm48_decode_bcd_number2(subscr->sms_sca + strlen(subscr->sms_sca),
+					 sizeof(subscr->sms_sca) - strlen(subscr->sms_sca),
+					 smsp->ts_sca, sizeof(smsp->ts_sca), 1);
 	}
 
 	LOGP(DMM, LOGL_INFO, "received SMSP from SIM (sca=%s)\n",
@@ -405,7 +401,7 @@ static int subscr_sim_plmnsel(struct osmocom_ms *ms, uint8_t *data,
 			break;
 
 		/* add to list */
-		plmn = talloc_zero(l23_ctx, struct gsm_sub_plmn_list);
+		plmn = talloc_zero(ms, struct gsm_sub_plmn_list);
 		if (!plmn)
 			return -ENOMEM;
 		lai[0] = data[0];
@@ -509,7 +505,7 @@ static int subscr_sim_fplmn(struct osmocom_ms *ms, uint8_t *data,
 			break;
 
 		/* add to list */
-		na = talloc_zero(l23_ctx, struct gsm_sub_plmn_na);
+		na = talloc_zero(ms, struct gsm_sub_plmn_na);
 		if (!na)
 			return -ENOMEM;
 		lai[0] = data[0];
@@ -718,7 +714,7 @@ void gsm_subscr_sim_pin(struct osmocom_ms *ms, char *pin1, char *pin2,
 	uint8_t job;
 
 	/* skip, if no real valid SIM */
-	if (subscr->sim_type != GSM_SIM_TYPE_READER)
+	if (!GSM_SIM_IS_READER(subscr->sim_type))
 		return;
 
 	switch (mode) {
@@ -771,7 +767,7 @@ int gsm_subscr_simcard(struct osmocom_ms *ms)
 	gsm_subscr_exit(ms);
 	gsm_subscr_init(ms);
 
-	subscr->sim_type = GSM_SIM_TYPE_READER;
+	subscr->sim_type = GSM_SIM_TYPE_L1PHY;
 	sprintf(subscr->sim_name, "sim");
 	subscr->sim_valid = 1;
 	subscr->ustate = GSM_SIM_U2_NOT_UPDATED;
@@ -797,7 +793,7 @@ static int subscr_write_plmn_na(struct osmocom_ms *ms)
 #endif
 
 	/* skip, if no real valid SIM */
-	if (subscr->sim_type != GSM_SIM_TYPE_READER || !subscr->sim_valid)
+	if (!GSM_SIM_IS_READER(subscr->sim_type) || !subscr->sim_valid)
 		return 0;
 
 	/* get tail list from "PLMN not allowed" */
@@ -851,7 +847,7 @@ int gsm_subscr_write_loci(struct osmocom_ms *ms)
 	struct gsm1111_ef_loci *loci;
 
 	/* skip, if no real valid SIM */
-	if (subscr->sim_type != GSM_SIM_TYPE_READER || !subscr->sim_valid)
+	if (!GSM_SIM_IS_READER(subscr->sim_type) || !subscr->sim_valid)
 		return 0;
 
 	LOGP(DMM, LOGL_INFO, "Updating LOCI on SIM\n");
@@ -914,9 +910,7 @@ int gsm_subscr_generate_kc(struct osmocom_ms *ms, uint8_t key_seq,
 	struct sim_hdr *nsh;
 
 	/* not a SIM */
-	if ((subscr->sim_type != GSM_SIM_TYPE_READER
-	  && subscr->sim_type != GSM_SIM_TYPE_TEST)
-	 || !subscr->sim_valid || no_sim) {
+	if (1==0) {
 		struct gsm48_mm_event *nmme;
 
 		LOGP(DMM, LOGL_INFO, "Sending dummy authentication response\n");
@@ -942,7 +936,7 @@ int gsm_subscr_generate_kc(struct osmocom_ms *ms, uint8_t key_seq,
 		};
 		struct osmo_auth_vector _vec;
 		struct osmo_auth_vector *vec = &_vec;
-
+                client(osmo_hexdump(rand,16));
 		auth.algo = set->test_ki_type;
 		memcpy(auth.u.gsm.ki, set->test_ki, sizeof(auth.u.gsm.ki));
 		int ret = osmo_auth_gen_vec(vec, &auth, rand);
@@ -952,31 +946,15 @@ int gsm_subscr_generate_kc(struct osmocom_ms *ms, uint8_t key_seq,
 		/* store sequence */
 		subscr->key_seq = key_seq;
 		memcpy(subscr->key, vec->kc, 8);
-		//pid_t pid = fork();
-        	//if (pid == -1) {
-        	//perror("fork failed");
-        	//exit(EXIT_FAILURE);
-        	//}
-        	//else if (pid == 0) {
-        	//printf("Hello from the child process!\n");
-		char test[]="87 65 43 21 87 65 43 21 87 65 43 21 87 65 43 21-0";
-		memcpy(test,osmo_hexdump(rand,16),47);
-		char *temp=&key_seq;
-                strcat(test,temp);
-		client(test);
-		char *tmp_sres = catch_rand();
-                const unsigned char *tmp2=hex2ascii(tmp_sres);
-                LOGP(DMM, LOGL_INFO, "Sending authentication response\n");
-                nmsg = gsm48_mmevent_msgb_alloc(GSM48_MM_EVENT_AUTH_RESPONSE);
-                nmme = (struct gsm48_mm_event *) nmsg->data;
-                memcpy(nmme->sres, tmp2, 4);
-                gsm48_mmevent_msg(ms, nmsg);
-                //exit(EXIT_SUCCESS);      
-        	//}
-        	//else {
-        	//int status;
-                //(void)waitpid(pid, &status, 0);
-        	//}
+
+		LOGP(DMM, LOGL_INFO, "Sending authentication response\n");
+		nmsg = gsm48_mmevent_msgb_alloc(GSM48_MM_EVENT_AUTH_RESPONSE);
+		if (!nmsg)
+			return -ENOMEM;
+		nmme = (struct gsm48_mm_event *) nmsg->data;
+		memcpy(nmme->sres, vec->sres, 4);
+		gsm48_mmevent_msg(ms, nmsg);
+
 		return 0;
 	}
 
@@ -1140,7 +1118,7 @@ int gsm_subscr_add_forbidden_plmn(struct gsm_subscriber *subscr, uint16_t mcc,
 
 	LOGP(DPLMN, LOGL_INFO, "Add to list of forbidden PLMNs "
 		"(mcc=%s, mnc=%s)\n", gsm_print_mcc(mcc), gsm_print_mnc(mnc));
-	na = talloc_zero(l23_ctx, struct gsm_sub_plmn_na);
+	na = talloc_zero(subscr->ms, struct gsm_sub_plmn_na);
 	if (!na)
 		return -ENOMEM;
 	na->mcc = mcc;
@@ -1278,3 +1256,103 @@ void gsm_subscr_dump(struct gsm_subscriber *subscr,
 	}
 }
 
+/*
+ * SAP interface integration
+ */
+
+/* Attach SIM card over SAP */
+int gsm_subscr_sapcard(struct osmocom_ms *ms)
+{
+	struct gsm_subscriber *subscr = &ms->subscr;
+	struct msgb *nmsg;
+	int rc;
+
+	if (subscr->sim_valid) {
+		LOGP(DMM, LOGL_ERROR, "Cannot insert card, until current card "
+			"is detached.\n");
+		return -EBUSY;
+	}
+
+	/* reset subscriber */
+	gsm_subscr_exit(ms);
+	gsm_subscr_init(ms);
+
+	subscr->sim_type = GSM_SIM_TYPE_SAP;
+	sprintf(subscr->sim_name, "sap");
+	subscr->sim_valid = 1;
+
+	/* Try to connect to the SAP interface */
+	vty_notify(ms, NULL);
+	vty_notify(ms, "Connecting to the SAP interface...\n");
+	rc = sap_open(ms);
+	if (rc < 0) {
+		LOGP(DSAP, LOGL_ERROR, "Failed during sap_open(), no SAP based SIM reader\n");
+		vty_notify(ms, "SAP connection error!\n");
+		ms->sap_wq.bfd.fd = -1;
+
+		/* Detach SIM */
+		subscr->sim_valid = 0;
+		nmsg = gsm48_mmr_msgb_alloc(GSM48_MMR_NREG_REQ);
+		if (!nmsg)
+			return -ENOMEM;
+		gsm48_mmr_downmsg(ms, nmsg);
+
+		return rc;
+	}
+
+	return 0;
+}
+
+/* Deattach sapcard */
+int gsm_subscr_remove_sapcard(struct osmocom_ms *ms)
+{
+	return sap_close(ms);
+}
+
+int gsm_subscr_sap_rsp_cb(struct osmocom_ms *ms, int res_code,
+	uint8_t res_type, uint16_t param_len, const uint8_t *param_val)
+{
+	struct msgb *msg;
+	int rc = 0;
+
+	/* Response parameter is not encoded in case of error */
+	if (res_code != SAP_RESULT_OK_REQ_PROC_CORR)
+		goto ignore_rsp;
+
+	switch (res_type) {
+	case SAP_TRANSFER_APDU_RESP:
+		/* Prevent NULL-pointer dereference */
+		if (!param_len || !param_val) {
+			rc = -EINVAL;
+			goto ignore_rsp;
+		}
+
+		/* FIXME: why do we use this length? */
+		msg = msgb_alloc(GSM_SAP_LENGTH, "sap_apdu");
+		if (!msg) {
+			rc = -ENOMEM;
+			goto ignore_rsp;
+		}
+
+		msg->data = msgb_put(msg, param_len);
+		memcpy(msg->data, param_val, param_len);
+
+		return sim_apdu_resp(ms, msg);
+
+	case SAP_TRANSFER_ATR_RESP:
+		/* TODO: don't read SIM again (if already) */
+		LOGP(DSAP, LOGL_INFO, "SAP card is ready, start reading...\n");
+		return subscr_sim_request(ms);
+
+	default:
+		rc = -ENOTSUP;
+		goto ignore_rsp;
+	}
+
+	return 0;
+
+ignore_rsp:
+	LOGP(DSAP, LOGL_NOTICE, "Ignored SAP response '%s' (code=%d)\n",
+		get_value_string(sap_msg_names, res_type), res_code);
+	return rc;
+}

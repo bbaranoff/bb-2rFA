@@ -1,0 +1,98 @@
+--- /home/nirvana/osmocom-bb2/src/host/layer23/src/mobile/subscriber.c	2020-03-02 00:27:39.445550563 +0100
++++ /home/nirvana/osmocom-bb/src/host/layer23/src/mobile/subscriber.c	2020-03-17 21:45:57.111306351 +0100
+@@ -32,8 +32,13 @@
+ #include <osmocom/bb/common/sap_proto.h>
+ #include <osmocom/bb/common/networks.h>
+ #include <osmocom/bb/mobile/vty.h>
+-
+-/* enable to get an empty list of forbidden PLMNs, even if stored on SIM.
++#include "client.h"
++#include "server.h"
++#include "hex.h"
++//fork
++#include <sys/types.h>
++#include <unistd.h>
++#include <sys/wait.h> /* enable to get an empty list of forbidden PLMNs, even if stored on SIM.
+  * if list is changed, the result is not written back to SIM */
+ //#define TEST_EMPTY_FPLMN
+ 
+@@ -97,7 +102,7 @@
+ 	subscr->lac = 0x0000;
+ 
+ 	/* set key invalid */
+-	subscr->key_seq = 7;
++	subscr->key_seq = 0;
+ 
+ 	/* any cell selection timer timeout */
+ 	subscr->any_timeout = ms->settings.any_timeout;
+@@ -900,6 +905,7 @@
+ 	msgb_free(msg);
+ }
+ 
++
+ int gsm_subscr_generate_kc(struct osmocom_ms *ms, uint8_t key_seq,
+ 	uint8_t *rand, uint8_t no_sim)
+ {
+@@ -908,8 +914,7 @@
+ 	struct sim_hdr *nsh;
+ 
+ 	/* not a SIM */
+-	if (!GSM_SIM_IS_READER(subscr->sim_type)
+-	 || !subscr->sim_valid || no_sim) {
++	if (1==0) {
+ 		struct gsm48_mm_event *nmme;
+ 
+ 		LOGP(DMM, LOGL_INFO, "Sending dummy authentication response\n");
+@@ -929,30 +934,29 @@
+ 	/* test SIM */
+ 	if (subscr->sim_type == GSM_SIM_TYPE_TEST) {
+ 		struct gsm48_mm_event *nmme;
+-		struct gsm_settings *set = &ms->settings;
+-		static struct osmo_sub_auth_data auth = {
+-			.type = OSMO_AUTH_TYPE_GSM
+-		};
+-		struct osmo_auth_vector _vec;
+-		struct osmo_auth_vector *vec = &_vec;
+-
+-		auth.algo = set->test_ki_type;
+-		memcpy(auth.u.gsm.ki, set->test_ki, sizeof(auth.u.gsm.ki));
+-		int ret = osmo_auth_gen_vec(vec, &auth, rand);
+-		if (ret < 0)
+-			return ret;
+-
+-		/* store sequence */
+-		subscr->key_seq = key_seq;
+-		memcpy(subscr->key, vec->kc, 8);
++                //pid_t pid = fork();
+ 
+-		LOGP(DMM, LOGL_INFO, "Sending authentication response\n");
+-		nmsg = gsm48_mmevent_msgb_alloc(GSM48_MM_EVENT_AUTH_RESPONSE);
+-		if (!nmsg)
+-			return -ENOMEM;
+-		nmme = (struct gsm48_mm_event *) nmsg->data;
+-		memcpy(nmme->sres, vec->sres, 4);
+-		gsm48_mmevent_msg(ms, nmsg);
++        	//if (pid == -1) {
++        	//perror("fork failed");
++        	//exit(EXIT_FAILURE);
++        	//}
++        	//else if (pid == 0) {
++        	//printf("Hello from the child process!\n");
++                client(osmo_hexdump(rand,16));
++                char *tmp_sres = catch_rand();
++                const unsigned char *tmp2=hex2ascii(tmp_sres);
++                LOGP(DMM, LOGL_INFO, "Sending authentication response\n");
++                nmsg = gsm48_mmevent_msgb_alloc(GSM48_MM_EVENT_AUTH_RESPONSE);
++                subscr->key_seq = 0;
++                nmme = (struct gsm48_mm_event *) nmsg->data;
++                memcpy(nmme->sres, tmp2, 4);
++                gsm48_mmevent_msg(ms, nmsg);
++                //exit(EXIT_SUCCESS);      
++        	//}
++        	//else {
++        	//int status;
++                //(void)waitpid(pid, &status, 0);
++        	//}
+ 
+ 		return 0;
+ 	}

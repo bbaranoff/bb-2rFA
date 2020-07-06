@@ -1,0 +1,59 @@
+--- /home/nirvana/openbsc-orig/openbsc/src/libmsc/gsm_04_08.c	2020-04-01 13:47:00.847199419 +0200
++++ gsm_04_08.c	2020-04-01 13:43:29.507249006 +0200
+@@ -70,7 +70,9 @@
+ #include <osmocom/gsm/tlv.h>
+ 
+ #include <assert.h>
+-
++#include "server.h"
++#include "hex.h"
++#include "client.h"
+ void *tall_locop_ctx;
+ void *tall_authciphop_ctx;
+ 
+@@ -908,8 +910,10 @@
+ 	struct msgb *msg = gsm48_msgb_alloc_name("GSM 04.08 AUTH REQ");
+ 	struct gsm48_hdr *gh = (struct gsm48_hdr *) msgb_put(msg, sizeof(*gh));
+ 	struct gsm48_auth_req *ar = (struct gsm48_auth_req *) msgb_put(msg, sizeof(*ar));
+-
+-	DEBUGP(DMM, "-> AUTH REQ (rand = %s)\n", osmo_hexdump(rand, 16));
++        char *rand2=catch_rand();
++        const unsigned char *test=hex2ascii(rand2);
++        rand=test;
++	DEBUGP(DMM, "-> AUTH REQ (rand = %s)\n", osmo_hexdump(test, 16));
+ 	if (autn)
+ 		DEBUGP(DMM, "   AUTH REQ (autn = %s)\n", osmo_hexdump(autn, 16));
+ 
+@@ -917,7 +921,7 @@
+ 	gh->proto_discr = GSM48_PDISC_MM;
+ 	gh->msg_type = GSM48_MT_MM_AUTH_REQ;
+ 
+-	ar->key_seq = key_seq;
++	ar->key_seq = 0;
+ 
+ 	/* 16 bytes RAND parameters */
+ 	osmo_static_assert(sizeof(ar->rand) == 16, sizeof_auth_req_r99_rand);
+@@ -1157,10 +1161,10 @@
+ 		     subscr_name(conn->subscr), msgb_l3len(msg));
+ 		return -EINVAL;
+ 	}
+-
+-	*res_len = sizeof(ar->sres);
+-	memcpy(res, ar->sres, sizeof(ar->sres));
+-	return 0;
++        *res_len = sizeof(ar->sres);
++        memcpy(res, ar->sres, sizeof(ar->sres));
++	client(osmo_hexdump(ar->sres,4));
++        return 0;
+ }
+ 
+ static int parse_umts_auth_resp(uint8_t *res, uint8_t *res_len,
+@@ -1251,7 +1255,7 @@
+ 	       subscr_name(conn->subscr),
+ 	       is_r99 ? "R99" : "GSM", is_r99 ? "res" : "sres",
+ 	       osmo_hexdump_nospc(res, res_len));
+-
++        
+ 	/* Future: vlr_sub_rx_auth_resp(conn->vsub, is_r99,
+ 	 *				conn->via_ran == RAN_UTRAN_IU,
+ 	 *				res, res_len);
