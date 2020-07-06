@@ -79,6 +79,7 @@
 #include <osmocom/bb/common/networks.h>
 #include <osmocom/bb/common/l1ctl.h>
 #include <osmocom/bb/mobile/vty.h>
+#include <osmocom/bb/mobile/dos.h>
 
 #include <l1ctl_proto.h>
 
@@ -1345,7 +1346,11 @@ static int gsm48_rr_chan_req(struct osmocom_ms *ms, int cause, int paging,
 	rr->wait_assign = 0;
 
 	/* number of retransmissions (with first transmission) */
-	rr->n_chan_req = s->max_retrans + 1;
+	if (dos.rach) {
+		rr->n_chan_req = dos.max_retrans + 1;
+	} else {
+		rr->n_chan_req = s->max_retrans + 1;
+	}
 
 	/* generate CHAN REQ (9.1.8) */
 	switch (cause) {
@@ -1695,6 +1700,11 @@ fail:
 	rr->cr_ra = chan_req;
 
 	return lapdm_rslms_recvmsg(nmsg, &ms->lapdm_channel);
+}
+
+int gsm48_rr_dos_rach(struct osmocom_ms *ms)
+{
+	return gsm48_rr_chan_req(ms, RR_EST_CAUSE_LOC_UPD, 0, GSM_MI_TYPE_TMSI);
 }
 
 /*
@@ -2357,6 +2367,9 @@ static int gsm48_match_ra(struct osmocom_ms *ms, struct gsm48_req_ref *ref)
 	int i;
 	uint8_t ia_t1, ia_t2, ia_t3;
 	uint8_t cr_t1, cr_t2, cr_t3;
+
+	if (dos.rach)
+		return 0;
 
 	for (i = 0; i < 3; i++) {
 		/* filter confirmed RACH requests only */

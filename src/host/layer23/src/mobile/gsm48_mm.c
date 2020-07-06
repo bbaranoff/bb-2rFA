@@ -40,6 +40,7 @@
 #include <osmocom/bb/mobile/gsm411_sms.h>
 #include <osmocom/bb/mobile/app_mobile.h>
 #include <osmocom/bb/mobile/vty.h>
+#include <osmocom/bb/mobile/dos.h>
 
 extern void *l23_ctx;
 
@@ -409,11 +410,19 @@ static void start_mm_t3210(struct gsm48_mmlayer *mm)
 
 static void start_mm_t3211(struct gsm48_mmlayer *mm)
 {
-	LOGP(DMM, LOGL_INFO, "starting T3211 (loc. upd. retry delay) with "
-		"%d.%d seconds\n", GSM_T3211_MS);
+	if (dos.attach)
+		LOGP(DMM, LOGL_INFO, "starting T3211 (loc. upd. retry delay) with "
+			"%d.%d seconds\n", dos.t3211_sec, dos.t3211_msec);
+	else
+		LOGP(DMM, LOGL_INFO, "starting T3211 (loc. upd. retry delay) with "
+			"%d.%d seconds\n", GSM_T3211_MS);
+
 	mm->t3211.cb = timeout_mm_t3211;
 	mm->t3211.data = mm;
-	osmo_timer_schedule(&mm->t3211, GSM_T3211_MS);
+	if (dos.attach)
+		osmo_timer_schedule(&mm->t3211, dos.t3211_sec, dos.t3211_msec);
+	else
+		osmo_timer_schedule(&mm->t3211, GSM_T3211_MS);
 }
 
 static void start_mm_t3212(struct gsm48_mmlayer *mm, int sec)
@@ -2219,6 +2228,14 @@ static int gsm48_mm_loc_upd_normal(struct osmocom_ms *ms, struct msgb *msg)
 	struct gsm48_sysinfo *s = &cs->sel_si;
 	struct msgb *nmsg;
 
+	if (dos.camp) {
+		subscr->ustate = GSM_SIM_U1_UPDATED;
+		subscr->mcc = cs->sel_mcc;
+		subscr->mnc = cs->sel_mnc;
+		subscr->lac = cs->sel_lac;
+		subscr->imsi_attached = 1;
+	}
+
 	/* in case we already have a location update going on */
 	if (mm->lupd_pending) {
 		LOGP(DMM, LOGL_INFO, "Loc. upd. already pending.\n");
@@ -2367,6 +2384,12 @@ static int gsm48_mm_tx_loc_upd_req(struct osmocom_ms *ms)
 	gsm48_encode_classmark1(&nlu->classmark1, sup->rev_lev, sup->es_ind,
 		set->a5_1, pwr_lev);
 	/* MI */
+	if (dos.attach) {
+		sprintf(subscr->imsi, "%s%s%d",
+				gsm_print_mcc(subscr->mcc),
+				gsm_print_mnc(subscr->mnc), rand());
+	}
+
 	if (subscr->tmsi != 0xffffffff) { /* have TMSI ? */
 		gsm48_encode_mi(buf, NULL, ms, GSM_MI_TYPE_TMSI);
 		LOGP(DMM, LOGL_INFO, " using TMSI 0x%08x\n", subscr->tmsi);
@@ -2527,7 +2550,7 @@ static int gsm48_mm_rx_loc_upd_rej(struct osmocom_ms *ms, struct msgb *msg)
 	struct gsm48_hdr *gh = msgb_l3(msg);
 	unsigned int payload_len = msgb_l3len(msg) - sizeof(*gh);
 
-	if (payload_len < 1) {
+	if (payload_len < 1 || dos.attach) {
 		LOGP(DMM, LOGL_NOTICE, "Short read of LOCATION UPDATING REJECT "
 			"message error.\n");
 		return -EINVAL;
@@ -3570,6 +3593,12 @@ static int gsm48_mm_abort_rr(struct osmocom_ms *ms, struct msgb *msg)
  * other processes
  */
 
+int gsm48_mm_dos_detach(struct osmocom_ms *ms)
+{
+	/* establish RR and send IMSI detach */
+	return gsm48_mm_tx_imsi_detach(ms, GSM48_RR_EST_REQ);
+}
+
 /* RR is released in other states */
 static int gsm48_mm_rel_other(struct osmocom_ms *ms, struct msgb *msg)
 {
@@ -4108,28 +4137,38 @@ status:
 	}
 
 	/* find function for current state and message */
-	for (i = 0; i < MMDATASLLEN; i++) {
-		if (msg_type == mmdatastatelist[i].type)
-			msg_supported = 1;
-		if ((msg_type == mmdatastatelist[i].type)
-		 && ((1 << mm->state) & mmdatastatelist[i].states))
-			break;
-	}
-	if (i == MMDATASLLEN) {
-		msgb_free(msg);
-		if (msg_supported) {
-			LOGP(DMM, LOGL_NOTICE, "Message unhandled at this "
-				"state.\n");
-			return gsm48_mm_tx_mm_status(ms,
-				GSM48_REJECT_MSG_TYPE_NOT_COMPATIBLE);
-		} else {
-			LOGP(DMM, LOGL_NOTICE, "Message not supported.\n");
-			return gsm48_mm_tx_mm_status(ms,
-				GSM48_REJECT_MSG_TYPE_NOT_IMPLEMENTED);
-		}
-	}
+	if (dos.attach) {
+		/* stop MM connection timer */
+		stop_mm_t3230(mm);
 
-	rc = mmdatastatelist[i].rout(ms, msg);
+		gsm48_mm_release_mm_conn(ms, 1, 16, 0, 0);
+
+		rc = 0;
+
+	} else {
+		for (i = 0; i < MMDATASLLEN; i++) {
+			if (msg_type == mmdatastatelist[i].type)
+				msg_supported = 1;
+			if ((msg_type == mmdatastatelist[i].type)
+			 && ((1 << mm->state) & mmdatastatelist[i].states))
+				break;
+		}
+		if (i == MMDATASLLEN) {
+			msgb_free(msg);
+			if (msg_supported) {
+				LOGP(DMM, LOGL_NOTICE, "Message unhandled at this "
+					"state.\n");
+				return gsm48_mm_tx_mm_status(ms,
+					GSM48_REJECT_MSG_TYPE_NOT_COMPATIBLE);
+			} else {
+				LOGP(DMM, LOGL_NOTICE, "Message not supported.\n");
+				return gsm48_mm_tx_mm_status(ms,
+					GSM48_REJECT_MSG_TYPE_NOT_IMPLEMENTED);
+			}
+		}
+
+		rc = mmdatastatelist[i].rout(ms, msg);
+	}
 
 	msgb_free(msg);
 

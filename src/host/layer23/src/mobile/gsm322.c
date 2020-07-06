@@ -40,6 +40,7 @@
 #include <osmocom/bb/common/networks.h>
 #include <osmocom/bb/mobile/vty.h>
 #include <osmocom/bb/mobile/app_mobile.h>
+#include <osmocom/bb/mobile/dos.h>
 
 #include <l1ctl_proto.h>
 
@@ -1428,6 +1429,8 @@ static int gsm322_a_sim_removed(struct osmocom_ms *ms, struct msgb *msg)
 {
 	struct msgb *nmsg;
 
+	dos.camp = 0;
+
 	/* indicate SIM remove to cell selection process */
 	nmsg = gsm322_msgb_alloc(GSM322_EVENT_SIM_REMOVE);
 	if (!nmsg)
@@ -1689,6 +1692,8 @@ static int gsm322_m_sim_removed(struct osmocom_ms *ms, struct msgb *msg)
 {
 	struct gsm322_plmn *plmn = &ms->plmn;
 	struct msgb *nmsg;
+
+	dos.camp = 0;
 
 	stop_plmn_timer(plmn);
 
